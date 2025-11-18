@@ -1,52 +1,172 @@
 // app/api/chat/route.ts
 import { NextResponse } from 'next/server';
-import type { ScenarioId } from '@/data/tracks';
+import { getScenario, type ScenarioId, type TrackId } from '@/data/tracks';
+
+const OLLAMA_URL =
+  process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
+const OLLAMA_MODEL =
+  process.env.OLLAMA_MODEL ?? 'llama3';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
 };
 
-const baseByScenario: Record<ScenarioId, string> = {
-  'ra-noise-complaint':
-    'Thanks for taking this seriously. The noise has really been getting to me. ',
-  'ra-homesick':
-    'I appreciate you listening. Being away from home has been harder than I thought. ',
-  'ta-failed-midterm':
-    'I put so much time into studying and still did badly, which is really discouraging. ',
-  'ta-extension-request':
-    'I know I should have started earlier, but things really piled up this week. ',
+type CustomScenarioPayload = {
+  trackId: TrackId;
+  title: string;
+  shortDescription: string;
+  personaNotes?: string;
 };
 
-function buildReply(scenarioId: ScenarioId, lastUserMessage: string | null) {
-  const base = baseByScenario[scenarioId] ?? 'Thanks for hearing me out. ';
+type PromptConfig = {
+  scenarioId?: string;
+  trackId?: TrackId;
+  title?: string;
+  shortDescription?: string;
+  personaNotes?: string;
+};
 
-  if (!lastUserMessage) {
-    return base + "Could you tell me a bit more about how you see the situation?";
+type OllamaMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
+function buildSystemPrompt({
+  scenarioId,
+  trackId,
+  title,
+  shortDescription,
+  personaNotes,
+}: PromptConfig): string {
+  const roleDescription =
+    trackId === 'ta'
+      ? 'a university student meeting with your teaching assistant (TA)'
+      : 'a resident student talking with your resident assistant (RA)';
+
+  const detailLines: string[] = [];
+
+  if (title) {
+    detailLines.push(`Scenario: ${title}`);
+  } else if (scenarioId) {
+    detailLines.push(`Scenario id: ${scenarioId}`);
   }
 
-  const snippet =
-    lastUserMessage.length > 80
-      ? `${lastUserMessage.slice(0, 80)}…`
-      : lastUserMessage;
+  if (shortDescription) {
+    detailLines.push(`Summary: ${shortDescription}`);
+  }
 
-  return (
-    base +
-    `When you said "${snippet}", that really captures how I'm feeling. ` +
-    'What do you think might help next?'
-  );
+  const cleanNotes = personaNotes?.trim();
+  if (cleanNotes) {
+    detailLines.push(`Persona notes: ${cleanNotes}`);
+  }
+
+  const details =
+    detailLines.length > 0 ? `${detailLines.join('\n')}\n\n` : '';
+
+  return `You are role-playing as ${roleDescription} in a live training simulation. The human participant is the RA/TA who is trying to support you. Reply ONLY as the student/resident who needs help.\n\n${details}Guidelines:\n- Stay in character at all times and speak in the first person.\n- Keep responses short (1-4 sentences) and natural.\n- Share emotions, worries, and context gradually, based on what you would realistically know.\n- Ask for clarification when you need it, but do NOT offer advice, coaching, or solutions to the RA/TA.\n- Avoid mentioning self-harm, diagnoses, or treatment plans.`;
 }
 
 export async function POST(req: Request) {
-  const { scenarioId, messages } = (await req.json()) as {
-    scenarioId: ScenarioId;
-    messages: ChatMessage[];
-  };
+  try {
+    const { scenarioId, messages, customScenario } = (await req.json()) as {
+      scenarioId: string;
+      messages: ChatMessage[];
+      customScenario?: CustomScenarioPayload;
+    };
 
-  const lastUserMessage =
-    [...messages].reverse().find((m) => m.role === 'user')?.content ?? null;
+    let promptDetails: PromptConfig | null = null;
 
-  const reply = buildReply(scenarioId, lastUserMessage);
+    if (customScenario) {
+      promptDetails = {
+        trackId: customScenario.trackId,
+        title: customScenario.title,
+        shortDescription: customScenario.shortDescription,
+        personaNotes: customScenario.personaNotes,
+      };
+    } else if (scenarioId) {
+      const builtIn = getScenario(scenarioId as ScenarioId);
+      if (builtIn) {
+        promptDetails = {
+          trackId: builtIn.trackId,
+          title: builtIn.title,
+          shortDescription: builtIn.shortDescription,
+        };
+      }
+    }
 
-  return NextResponse.json({ reply });
+    const systemPrompt = buildSystemPrompt({
+      scenarioId,
+      ...((promptDetails ?? {}) as PromptConfig),
+    });
+
+    // Build request body for Ollama chat
+    const chatMessages: OllamaMessage[] = [
+      {
+        role: 'system',
+        content: systemPrompt,
+      },
+      ...messages.map((m) => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
+      })),
+    ];
+
+    const body = {
+      model: OLLAMA_MODEL,
+      stream: false, // IMPORTANT: force non-streaming JSON response
+      messages: chatMessages,
+    };
+
+    const ollamaRes = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    // Read raw text first so we can log or parse manually
+    const raw = await ollamaRes.text();
+
+    if (!ollamaRes.ok) {
+      console.error('Ollama error:', ollamaRes.status, raw);
+      return NextResponse.json(
+        {
+          error: 'Ollama request failed',
+          status: ollamaRes.status,
+          details: raw,
+        },
+        { status: 500 },
+      );
+    }
+
+    let data: any;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      console.error('Failed to parse Ollama JSON:', err, raw);
+      return NextResponse.json(
+        { error: 'Bad response from Ollama' },
+        { status: 500 },
+      );
+    }
+
+    // Different Ollama versions use slightly different shapes
+    const reply: string =
+      data?.message?.content ??
+      data?.choices?.[0]?.message?.content ??
+      '';
+
+    if (!reply) {
+      console.error('No reply content in Ollama response:', data);
+      return NextResponse.json(
+        { error: 'Empty reply from Ollama' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ reply });
+  } catch (err) {
+    console.error('Chat route error:', err);
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  }
 }

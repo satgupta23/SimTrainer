@@ -79,17 +79,40 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
         body: JSON.stringify({ scenarioId, messages: nextMessages }),
       });
 
-      if (!res.ok) throw new Error('Chat error');
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.error('Chat error response:', res.status, text);
+
+        // Don't crash the app – show a graceful message
+        setMessages([
+          ...nextMessages,
+          {
+            role: 'assistant',
+            content:
+              "Sorry—I'm having trouble connecting to the AI server right now.",
+          },
+        ]);
+        return;
+      }
 
       const data = await res.json();
+
       if (data.reply) {
-        setMessages((prev) => [
-          ...prev,
+        setMessages([
+          ...nextMessages,
           { role: 'assistant', content: data.reply as string },
         ]);
       }
     } catch (err) {
       console.error('Chat error', err);
+      setMessages([
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content:
+            "Sorry—something went wrong while talking to the AI. Please try again.",
+        },
+      ]);
     } finally {
       setIsSending(false);
     }

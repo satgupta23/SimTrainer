@@ -16,10 +16,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="bg-slate-950 text-slate-50">
+      <body className="min-h-screen bg-slate-950 text-slate-50 antialiased">
         <Providers>
-          <TopNav />
-          <div className="min-h-[calc(100vh-3rem)] px-4 pb-10">{children}</div>
+          <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
+            <TopNav />
+            {/* Main content shell */}
+            <div className="mx-auto max-w-6xl px-4 pb-10 pt-6">
+              {children}
+            </div>
+          </div>
         </Providers>
       </body>
     </html>
