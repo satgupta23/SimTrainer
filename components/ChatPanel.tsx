@@ -1,17 +1,17 @@
 // components/ChatPanel.tsx
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import type { ScenarioId, Scenario } from '@/data/tracks';
 import { getScenario } from '@/data/tracks';
 
-type ChatMessage = {
+export type ChatMessage = {
   role: 'user' | 'assistant'; // user = RA/TA, assistant = student
   content: string;
 };
 
-type Feedback = {
+export type Feedback = {
   empathy: number;
   curiosity: number;
   structure: number;
@@ -20,9 +20,17 @@ type Feedback = {
 
 type ChatPanelProps = {
   scenarioId: ScenarioId;
+  conversationId?: string;
+  initialMessages?: ChatMessage[] | null;
+  initialFeedback?: Feedback | null;
 };
 
-export default function ChatPanel({ scenarioId }: ChatPanelProps) {
+export default function ChatPanel({
+  scenarioId,
+  conversationId,
+  initialMessages = null,
+  initialFeedback = null,
+}: ChatPanelProps) {
   const { data: session } = useSession();
 
   const [scenario, setScenario] = useState<Scenario | null>(null);
@@ -34,22 +42,43 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
+  const seededMessages = useMemo(
+    () => (initialMessages && initialMessages.length > 0 ? initialMessages : null),
+    [conversationId, initialMessages]
+  );
+
+  const seededFeedback = useMemo(
+    () => (initialFeedback ? initialFeedback : null),
+    [conversationId, initialFeedback]
+  );
+
   // Load scenario + initial student line
   useEffect(() => {
     const s = getScenario(scenarioId);
-    if (!s) return;
+    if (!s) {
+      setScenario(null);
+      setMessages([]);
+      setFeedback(null);
+      return;
+    }
 
     setScenario(s);
-    setMessages([
-      {
-        role: 'assistant',
-        content: s.openingLine,
-      },
-    ]);
-    setFeedback(null);
+    if (seededMessages) {
+      setMessages(seededMessages);
+      setFeedback(seededFeedback ?? null);
+    } else {
+      setMessages([
+        {
+          role: 'assistant',
+          content: s.openingLine,
+        },
+      ]);
+      setFeedback(null);
+    }
+
     setHasSaved(false);
     setInput('');
-  }, [scenarioId]);
+  }, [scenarioId, conversationId, seededMessages, seededFeedback]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -69,6 +98,7 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
 
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
+    setHasSaved(false);
     setInput('');
     setIsSending(true);
 
@@ -118,6 +148,32 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
     }
   }
 
+  async function persistConversation(messagesToPersist: ChatMessage[], feedbackToPersist: Feedback | null) {
+    if (!session?.user || !scenario) return;
+
+    const payload = {
+      scenarioId,
+      trackId: scenario.trackId,
+      scenarioTitle: scenario.title,
+      messages: messagesToPersist,
+      feedback: feedbackToPersist,
+    };
+
+    const endpoint = conversationId ? `/api/history/${conversationId}` : '/api/history';
+    const method = conversationId ? 'PUT' : 'POST';
+
+    const res = await fetch(endpoint, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(text || 'Failed to save conversation');
+    }
+  }
+
   async function handleEndScenario() {
     if (!messages.length || isSending || hasSaved) return;
 
@@ -137,20 +193,9 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
       const newFeedback: Feedback = evalData.feedback;
       setFeedback(newFeedback);
 
-      // 2) If logged in, save conversation to history
+      // 2) If logged in, save conversation to history (create or update)
       if (session?.user && scenario) {
-        await fetch('/api/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scenarioId,
-            trackId: scenario.trackId,
-            scenarioTitle: scenario.title,
-            messages,
-            feedback: newFeedback,
-          }),
-        });
-
+        await persistConversation(messages, newFeedback);
         setHasSaved(true);
       }
     } catch (err) {
@@ -159,6 +204,42 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
       setIsSending(false);
     }
   }
+
+  async function handleResetConversation() {
+    if (!scenario || !conversationId) return;
+    if (typeof window !== 'undefined') {
+      const confirmReset = window.confirm(
+        'Reset this conversation and start over from the opening line? This will overwrite the saved conversation history.'
+      );
+      if (!confirmReset) return;
+    }
+
+    const startingMessages: ChatMessage[] = [
+      { role: 'assistant', content: scenario.openingLine },
+    ];
+
+    setMessages(startingMessages);
+    setFeedback(null);
+    setInput('');
+    setHasSaved(false);
+    setIsSending(true);
+
+    try {
+      await persistConversation(startingMessages, null);
+    } catch (err) {
+      console.error('Failed to reset conversation', err);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  const saveButtonLabel = conversationId
+    ? hasSaved
+      ? 'Updates saved'
+      : 'Save progress'
+    : hasSaved
+    ? 'Saved to your history'
+    : 'End scenario & save';
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -204,8 +285,18 @@ export default function ChatPanel({ scenarioId }: ChatPanelProps) {
           disabled={isSending || hasSaved}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
-          {hasSaved ? 'Saved to your history' : 'End scenario & save'}
+          {saveButtonLabel}
         </button>
+        {conversationId && scenario && (
+          <button
+            type="button"
+            onClick={handleResetConversation}
+            disabled={isSending}
+            className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-medium text-slate-200 hover:border-rose-400 hover:text-rose-200 disabled:opacity-60"
+          >
+            Reset conversation
+          </button>
+        )}
 
         <p className="text-xs text-slate-400">
           {feedback ? (
