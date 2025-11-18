@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 
 type TrackId = 'ra' | 'ta';
 
@@ -190,6 +191,7 @@ function appendHistory(entry: HistoryEntry) {
 export default function CustomScenarioPage() {
   const params = useParams<{ scenarioId: string }>();
   const scenarioId = (params?.scenarioId ?? '') as string;
+  const { data: session } = useSession();
 
   const [scenario, setScenario] = useState<CustomScenario | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -291,16 +293,16 @@ export default function CustomScenarioPage() {
     }
   };
 
-  const handleEndScenario = () => {
+  const handleEndScenario = async () => {
     if (!scenario) return;
     if (messages.length === 0) {
       alert('Have a short conversation first before requesting feedback.');
       return;
     }
 
-    const { scores, notes } = scoreConversation(messages);
-    setScores(scores);
-    setFeedbackNotes(notes);
+    const evaluation = scoreConversation(messages);
+    setScores(evaluation.scores);
+    setFeedbackNotes(evaluation.notes);
     setEnded(true);
 
     const entry: HistoryEntry = {
@@ -311,10 +313,28 @@ export default function CustomScenarioPage() {
       isCustom: true,
       endedAt: new Date().toISOString(),
       messages,
-      scores,
+      scores: evaluation.scores,
     };
 
     appendHistory(entry);
+
+    if (session?.user) {
+      try {
+        await fetch('/api/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scenarioId: scenario.id,
+            trackId: scenario.trackId,
+            scenarioTitle: scenario.title,
+            messages,
+            feedback: evaluation.scores,
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to save custom scenario history', err);
+      }
+    }
   };
 
   // If we don't have a scenario yet (or it wasn't found)
