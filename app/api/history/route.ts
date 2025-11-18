@@ -68,3 +68,36 @@ export async function POST(req: Request) {
 
   return NextResponse.json(conversation, { status: 201 });
 }
+
+export async function DELETE(req: Request) {
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user || !(session.user as any).id) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const userId = (session.user as any).id as string;
+
+  let body: { ids?: string[]; clearAll?: boolean } | null = null;
+  try {
+    body = await req.json();
+  } catch {
+    body = null;
+  }
+
+  const ids = body?.ids;
+  const clearAll = body?.clearAll;
+
+  if (ids && !Array.isArray(ids)) {
+    return NextResponse.json({ error: 'ids must be an array' }, { status: 400 });
+  }
+
+  if (!clearAll && (!ids || ids.length === 0)) {
+    return NextResponse.json({ error: 'No history items specified' }, { status: 400 });
+  }
+
+  const where = clearAll ? { userId } : { userId, id: { in: ids } };
+  const result = await prisma.conversation.deleteMany({ where });
+
+  return NextResponse.json({ deleted: result.count });
+}
