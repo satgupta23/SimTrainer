@@ -127,6 +127,11 @@ export default async function ConversationDetailPage({ params }: PageProps) {
                   <span>Empathy: {parsedFeedback.empathy ?? 'N/A'}/5</span>
                   <span>Curiosity: {parsedFeedback.curiosity ?? 'N/A'}/5</span>
                   <span>Structure: {parsedFeedback.structure ?? 'N/A'}/5</span>
+                  <span>Satisfaction: {parsedFeedback.satisfaction ?? 'N/A'}/10</span>
+                  <span>
+                    Status:{' '}
+                    {parsedFeedback.resolved ? 'Resolved' : 'In progress'}
+                  </span>
                 </div>
                 {parsedFeedback.summary && (
                   <p className="text-slate-300 whitespace-pre-line">
@@ -176,6 +181,9 @@ function parseFeedback(raw: string | null): Feedback | null {
       empathy: typeof parsed?.empathy === 'number' ? parsed.empathy : 0,
       curiosity: typeof parsed?.curiosity === 'number' ? parsed.curiosity : 0,
       structure: typeof parsed?.structure === 'number' ? parsed.structure : 0,
+      satisfaction:
+        typeof parsed?.satisfaction === 'number' ? parsed.satisfaction : 1,
+      resolved: typeof parsed?.resolved === 'boolean' ? parsed.resolved : false,
       summary: typeof parsed?.summary === 'string' ? parsed.summary : '',
     };
   } catch {

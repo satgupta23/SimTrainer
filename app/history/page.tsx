@@ -51,6 +51,8 @@ function safeParseFeedback(feedbackJson: string): HistoryConversation['feedback'
       empathy: typeof parsed?.empathy === 'number' ? parsed.empathy : undefined,
       curiosity: typeof parsed?.curiosity === 'number' ? parsed.curiosity : undefined,
       structure: typeof parsed?.structure === 'number' ? parsed.structure : undefined,
+      satisfaction: typeof parsed?.satisfaction === 'number' ? parsed.satisfaction : undefined,
+      resolved: typeof parsed?.resolved === 'boolean' ? parsed.resolved : undefined,
       summary: typeof parsed?.summary === 'string' ? parsed.summary : undefined,
     };
   } catch {

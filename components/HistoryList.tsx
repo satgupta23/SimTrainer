@@ -7,6 +7,8 @@ export type HistoryFeedback = {
   empathy?: number;
   curiosity?: number;
   structure?: number;
+  satisfaction?: number;
+  resolved?: boolean;
   summary?: string;
 };
 
@@ -179,6 +181,17 @@ export default function HistoryList({ initialConversations }: HistoryListProps) 
                         <span>Empathy: {c.feedback.empathy ?? 'N/A'}/5</span>
                         <span>Curiosity: {c.feedback.curiosity ?? 'N/A'}/5</span>
                         <span>Structure: {c.feedback.structure ?? 'N/A'}/5</span>
+                        <span>
+                          Satisfaction: {c.feedback.satisfaction ?? 'N/A'}/10
+                        </span>
+                        <span>
+                          Status:{' '}
+                          {typeof c.feedback.resolved === 'boolean'
+                            ? c.feedback.resolved
+                              ? 'Resolved'
+                              : 'In progress'
+                            : 'Unknown'}
+                        </span>
                       </div>
                     ) : (
                       <p className="text-[11px] text-slate-500">No feedback saved for this run.</p>

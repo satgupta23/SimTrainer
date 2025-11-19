@@ -15,14 +15,30 @@ export type Feedback = {
   empathy: number;
   curiosity: number;
   structure: number;
+  satisfaction: number;
+  resolved: boolean;
   summary: string;
 };
+
+type PartialFeedback = Partial<Feedback> | null;
+
+function normalizeFeedback(raw: PartialFeedback): Feedback | null {
+  if (!raw) return null;
+  return {
+    empathy: raw.empathy ?? 0,
+    curiosity: raw.curiosity ?? 0,
+    structure: raw.structure ?? 0,
+    satisfaction: raw.satisfaction ?? 1,
+    resolved: raw.resolved ?? false,
+    summary: raw.summary ?? '',
+  };
+}
 
 type ChatPanelProps = {
   scenarioId: ScenarioId;
   conversationId?: string;
   initialMessages?: ChatMessage[] | null;
-  initialFeedback?: Feedback | null;
+  initialFeedback?: Partial<Feedback> | null;
 };
 
 export default function ChatPanel({
@@ -39,6 +55,7 @@ export default function ChatPanel({
   const [isSending, setIsSending] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [hasSaved, setHasSaved] = useState(false);
+  const [isScenarioComplete, setIsScenarioComplete] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -48,7 +65,7 @@ export default function ChatPanel({
   );
 
   const seededFeedback = useMemo(
-    () => (initialFeedback ? initialFeedback : null),
+    () => normalizeFeedback(initialFeedback ?? null),
     [conversationId, initialFeedback]
   );
 
@@ -59,6 +76,7 @@ export default function ChatPanel({
       setScenario(null);
       setMessages([]);
       setFeedback(null);
+      setIsScenarioComplete(false);
       return;
     }
 
@@ -66,6 +84,7 @@ export default function ChatPanel({
     if (seededMessages) {
       setMessages(seededMessages);
       setFeedback(seededFeedback ?? null);
+      setIsScenarioComplete(seededFeedback?.resolved ?? false);
     } else {
       setMessages([
         {
@@ -74,6 +93,7 @@ export default function ChatPanel({
         },
       ]);
       setFeedback(null);
+      setIsScenarioComplete(false);
     }
 
     setHasSaved(false);
@@ -89,7 +109,7 @@ export default function ChatPanel({
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim() || isSending) return;
+    if (!input.trim() || isSending || isScenarioComplete) return;
 
     const userMessage: ChatMessage = {
       role: 'user',
@@ -180,7 +200,7 @@ export default function ChatPanel({
     setIsSending(true);
 
     try {
-      // 1) Get feedback (our custom heuristic, NOT OpenAI)
+      // 1) Get rubric-based feedback from our local evaluator
       const evalRes = await fetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -192,6 +212,10 @@ export default function ChatPanel({
       const evalData = await evalRes.json();
       const newFeedback: Feedback = evalData.feedback;
       setFeedback(newFeedback);
+      setIsScenarioComplete(Boolean(newFeedback.resolved));
+      if (newFeedback.resolved) {
+        setInput('');
+      }
 
       // 2) If logged in, save conversation to history (create or update)
       if (session?.user && scenario) {
@@ -206,10 +230,12 @@ export default function ChatPanel({
   }
 
   async function handleResetConversation() {
-    if (!scenario || !conversationId) return;
+    if (!scenario) return;
     if (typeof window !== 'undefined') {
       const confirmReset = window.confirm(
-        'Reset this conversation and start over from the opening line? This will overwrite the saved conversation history.'
+        conversationId
+          ? 'Reset this saved conversation and start over from the opening line? This will overwrite the saved history.'
+          : 'Reset this conversation and go back to the opening line? You will lose the current practice run.'
       );
       if (!confirmReset) return;
     }
@@ -222,18 +248,23 @@ export default function ChatPanel({
     setFeedback(null);
     setInput('');
     setHasSaved(false);
-    setIsSending(true);
+    setIsScenarioComplete(false);
 
-    try {
-      await persistConversation(startingMessages, null);
-    } catch (err) {
-      console.error('Failed to reset conversation', err);
-    } finally {
-      setIsSending(false);
+    if (conversationId) {
+      setIsSending(true);
+      try {
+        await persistConversation(startingMessages, null);
+      } catch (err) {
+        console.error('Failed to reset conversation', err);
+      } finally {
+        setIsSending(false);
+      }
     }
   }
 
-  const saveButtonLabel = conversationId
+  const saveButtonLabel = isScenarioComplete
+    ? 'Scenario complete'
+    : conversationId
     ? hasSaved
       ? 'Updates saved'
       : 'Save progress'
@@ -264,13 +295,18 @@ export default function ChatPanel({
       <form onSubmit={handleSend} className="flex gap-2">
         <input
           className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-          placeholder="Type your reply as the RA/TA…"
+          placeholder={
+            isScenarioComplete
+              ? 'Scenario complete! Reset to practice again.'
+              : 'Type your reply as the RA/TA...'
+          }
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          disabled={isScenarioComplete}
         />
         <button
           type="submit"
-          disabled={isSending || !input.trim()}
+          disabled={isSending || !input.trim() || isScenarioComplete}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           Send
@@ -282,12 +318,12 @@ export default function ChatPanel({
         <button
           type="button"
           onClick={handleEndScenario}
-          disabled={isSending || hasSaved}
+          disabled={isSending || hasSaved || isScenarioComplete}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
         >
           {saveButtonLabel}
         </button>
-        {conversationId && scenario && (
+        {scenario && (
           <button
             type="button"
             onClick={handleResetConversation}
@@ -302,8 +338,10 @@ export default function ChatPanel({
           {feedback ? (
             <>
               Feedback:&nbsp;
-              Empathy: {feedback.empathy}/5 • Curiosity: {feedback.curiosity}/5 •
-              Structure: {feedback.structure}/5
+              Empathy: {feedback.empathy}/5 | Curiosity: {feedback.curiosity}/5 |
+              Structure: {feedback.structure}/5 | Satisfaction:{' '}
+              {feedback.satisfaction}/10 | Status:{' '}
+              {feedback.resolved ? 'Resolved' : 'In progress'}
             </>
           ) : (
             <>Feedback will appear after you end the scenario.</>
@@ -311,10 +349,23 @@ export default function ChatPanel({
         </p>
       </div>
 
+      {isScenarioComplete && (
+        <div className="rounded-lg border border-emerald-500/60 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+          Great work! The student sounds satisfied, so this scenario is complete.
+          Reset any time to practice the conversation again.
+        </div>
+      )}
+
       {/* Wordy feedback */}
       {feedback && feedback.summary && (
         <div className="rounded-lg border border-slate-700 bg-slate-900/80 p-3 text-sm text-slate-100">
           <p className="font-medium mb-1">Detailed feedback</p>
+          <p className="text-xs text-slate-400 mb-2">
+            Status:{' '}
+            {feedback.resolved
+              ? 'The student appears consoled and ready to wrap up.'
+              : 'The student may still need reassurance or a next step.'}
+          </p>
           <p>{feedback.summary}</p>
         </div>
       )}
